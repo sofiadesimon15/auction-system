@@ -8,13 +8,13 @@ The server represents the nodes in the distributed system. Each node is configur
 
 Command to start a node:
 ```
-go run server <nodeID> <nextNodeAddress> <initialToken>
+go run server.go <nodeID> <nextNodeAddress> <initialToken>
 ```
 Example:
 ```
-go run server 1 localhost:5002 true
-go run server 2 localhost:5003 false
-go run server 3 localhost:5001 false
+go run server.go 1 localhost:5002 true
+go run server.go 2 localhost:5003 false
+go run server.go 3 localhost:5001 false
 ```
 # Logs
 Logs are saved in logs/log.txt.
@@ -24,7 +24,7 @@ The client can interact with the system by sending requests to place a bid (bid)
 
 Command to run the client:
 ```
-go run client --server=<serverAddress> --action=<bid|result> --bidder=<BidderID> --amount=<BidAmount>
+go run client.go --server=<serverAddress> --action=<bid|result> --bidder=<BidderID> --amount=<BidAmount>
 ```
 Parameters:
 --server: Server address (e.g., localhost:5001).
@@ -34,11 +34,11 @@ Parameters:
 Examples:
 Place a bid:
 ```
-go run client --server=localhost:5001 --action=bid --bidder=BidderA --amount=100
+go run client.go --server=localhost:5001 --action=bid --bidder=BidderA --amount=100
 ```
 Query the result:
 ```
-go run client --server=localhost:5001 --action=result
+go run client.go --server=localhost:5001 --action=result
 ```
 
 # Auction End
