@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	pb "github.com/sofiadesimon15/auction-system/proto" // replace with actual path
@@ -38,7 +37,7 @@ func performAction(serverAddr, action, bidderID string, amount int) error {
 	// Establish connection to the server
 	conn, err := grpc.Dial(serverAddr, grpc.WithInsecure(), grpc.WithBlock())
 	if err != nil {
-		return fmt.Errorf("could not connect to server %s: %v", serverAddr, err)
+		return fmt.Errorf("Could not connect to server %s: %v", serverAddr, err)
 	}
 	defer conn.Close()
 
@@ -61,18 +60,14 @@ func performAction(serverAddr, action, bidderID string, amount int) error {
 			return fmt.Errorf("bid RPC failed: %v", err)
 		}
 		// Handle response
-		if strings.HasPrefix(resp.Outcome, "fail") {
-			fmt.Printf("Bid Outcome: %s\n", resp.Outcome)
-		} else {
-			fmt.Printf("Bid Outcome: %s\n", resp.Outcome)
-		}
+		fmt.Printf("Bid Outcome: %s\n", resp.Outcome)
 	case "result":
 		// Create ResultRequest
 		req := &pb.ResultRequest{}
 		// Send Result RPC
 		resp, err := client.Result(ctx, req)
 		if err != nil {
-			return fmt.Errorf("result RPC failed: %v", err)
+			return fmt.Errorf("Result RPC failed: %v", err)
 		}
 		// Display result
 		fmt.Printf("Auction Result: %s\n", resp.Outcome)
