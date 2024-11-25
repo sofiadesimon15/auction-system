@@ -142,8 +142,15 @@ func (s *TokenRingServer) moniterTokenPassing() {
 	}
 }
 
+/*// AuctionService implements the AuctionServiceServer interface
+type AuctionService struct {
+	pb.UnimplementedAuctionServiceServer
+	auctionState *AuctionState
+	node         *TokenRingServer
+}*/
+
 // NewAuctionService creates a new AuctionService instance
-func NewAuctionService(austionState *AuctionState, node *TokenRingServer) *AuctionServiceServer {
+func NewAuctionService(auctionState *AuctionState, node *TokenRingServer) *AuctionServiceServer {
 	return &AuctionServiceServer{
 		auctionState: auctionState,
 		node:         node,
