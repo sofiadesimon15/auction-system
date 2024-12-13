@@ -5,27 +5,41 @@ option go_package = "github.com/sofiadesimon15/auction-system/proto";
 
 // TokenRing service for token passing between nodes
 service TokenRing {
-  rpc RequestToken(Request) returns (Response) {}
+  // PassToken is used by a node to pass the token to the next node in the ring
   rpc PassToken(TokenMessage) returns (Response) {}
+
+  // GetNextNode is used to get the next node in the ring
+  rpc GetNextNode(GetNextNodeRequest) returns (GetNextNodeResponse) {}
 }
 
-// Auction service for handling bids and querying results
+// AuctionService for handling bids and querying results
 service AuctionService {
+  // Bid allows a client to place a bid in the auction
   rpc Bid(BidRequest) returns (BidResponse) {}
+
+  // Result allows a client to query the current highest bid or the auction winner
   rpc Result(ResultRequest) returns (ResultResponse) {}
 }
 
 // Messages for TokenRing
-message Request {
-  int32 node_id = 1;
-}
-
 message TokenMessage {
   int32 token_holder_id = 1;
+
+  // Bid information to propogate with the token
+  string bidder_id = 2; 
+  int32 amount = 3;
 }
 
 message Response {
   string message = 1;
+}
+
+message GetNextNodeRequest {
+  string current_node_addr = 1;
+}
+
+message GetNextNodeResponse {
+  string next_node_addr = 1;
 }
 
 // Auction messages

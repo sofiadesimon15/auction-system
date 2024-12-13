@@ -19,18 +19,20 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	TokenRing_RequestToken_FullMethodName = "/auction.TokenRing/RequestToken"
-	TokenRing_PassToken_FullMethodName    = "/auction.TokenRing/PassToken"
+	TokenRing_PassToken_FullMethodName   = "/auction.TokenRing/PassToken"
+	TokenRing_GetNextNode_FullMethodName = "/auction.TokenRing/GetNextNode"
 )
 
 // TokenRingClient is the client API for TokenRing service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// Existing TokenRing service
+// TokenRing service for token passing between nodes
 type TokenRingClient interface {
-	RequestToken(ctx context.Context, in *Request, opts ...grpc.CallOption) (*Response, error)
+	// PassToken is used by a node to pass the token to the next node in the ring
 	PassToken(ctx context.Context, in *TokenMessage, opts ...grpc.CallOption) (*Response, error)
+	// GetNextNode is used to get the next node in the ring
+	GetNextNode(ctx context.Context, in *GetNextNodeRequest, opts ...grpc.CallOption) (*GetNextNodeResponse, error)
 }
 
 type tokenRingClient struct {
@@ -39,16 +41,6 @@ type tokenRingClient struct {
 
 func NewTokenRingClient(cc grpc.ClientConnInterface) TokenRingClient {
 	return &tokenRingClient{cc}
-}
-
-func (c *tokenRingClient) RequestToken(ctx context.Context, in *Request, opts ...grpc.CallOption) (*Response, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(Response)
-	err := c.cc.Invoke(ctx, TokenRing_RequestToken_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 func (c *tokenRingClient) PassToken(ctx context.Context, in *TokenMessage, opts ...grpc.CallOption) (*Response, error) {
@@ -61,14 +53,26 @@ func (c *tokenRingClient) PassToken(ctx context.Context, in *TokenMessage, opts 
 	return out, nil
 }
 
+func (c *tokenRingClient) GetNextNode(ctx context.Context, in *GetNextNodeRequest, opts ...grpc.CallOption) (*GetNextNodeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetNextNodeResponse)
+	err := c.cc.Invoke(ctx, TokenRing_GetNextNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // TokenRingServer is the server API for TokenRing service.
 // All implementations must embed UnimplementedTokenRingServer
 // for forward compatibility.
 //
-// Existing TokenRing service
+// TokenRing service for token passing between nodes
 type TokenRingServer interface {
-	RequestToken(context.Context, *Request) (*Response, error)
+	// PassToken is used by a node to pass the token to the next node in the ring
 	PassToken(context.Context, *TokenMessage) (*Response, error)
+	// GetNextNode is used to get the next node in the ring
+	GetNextNode(context.Context, *GetNextNodeRequest) (*GetNextNodeResponse, error)
 	mustEmbedUnimplementedTokenRingServer()
 }
 
@@ -79,11 +83,11 @@ type TokenRingServer interface {
 // pointer dereference when methods are called.
 type UnimplementedTokenRingServer struct{}
 
-func (UnimplementedTokenRingServer) RequestToken(context.Context, *Request) (*Response, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method RequestToken not implemented")
-}
 func (UnimplementedTokenRingServer) PassToken(context.Context, *TokenMessage) (*Response, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PassToken not implemented")
+}
+func (UnimplementedTokenRingServer) GetNextNode(context.Context, *GetNextNodeRequest) (*GetNextNodeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetNextNode not implemented")
 }
 func (UnimplementedTokenRingServer) mustEmbedUnimplementedTokenRingServer() {}
 func (UnimplementedTokenRingServer) testEmbeddedByValue()                   {}
@@ -106,24 +110,6 @@ func RegisterTokenRingServer(s grpc.ServiceRegistrar, srv TokenRingServer) {
 	s.RegisterService(&TokenRing_ServiceDesc, srv)
 }
 
-func _TokenRing_RequestToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(Request)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(TokenRingServer).RequestToken(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: TokenRing_RequestToken_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(TokenRingServer).RequestToken(ctx, req.(*Request))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _TokenRing_PassToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(TokenMessage)
 	if err := dec(in); err != nil {
@@ -142,6 +128,24 @@ func _TokenRing_PassToken_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TokenRing_GetNextNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetNextNodeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TokenRingServer).GetNextNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TokenRing_GetNextNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TokenRingServer).GetNextNode(ctx, req.(*GetNextNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // TokenRing_ServiceDesc is the grpc.ServiceDesc for TokenRing service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -150,12 +154,12 @@ var TokenRing_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*TokenRingServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "RequestToken",
-			Handler:    _TokenRing_RequestToken_Handler,
-		},
-		{
 			MethodName: "PassToken",
 			Handler:    _TokenRing_PassToken_Handler,
+		},
+		{
+			MethodName: "GetNextNode",
+			Handler:    _TokenRing_GetNextNode_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
@@ -171,9 +175,11 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// Auction service
+// AuctionService for handling bids and querying results
 type AuctionServiceClient interface {
+	// Bid allows a client to place a bid in the auction
 	Bid(ctx context.Context, in *BidRequest, opts ...grpc.CallOption) (*BidResponse, error)
+	// Result allows a client to query the current highest bid or the auction winner
 	Result(ctx context.Context, in *ResultRequest, opts ...grpc.CallOption) (*ResultResponse, error)
 }
 
@@ -209,9 +215,11 @@ func (c *auctionServiceClient) Result(ctx context.Context, in *ResultRequest, op
 // All implementations must embed UnimplementedAuctionServiceServer
 // for forward compatibility.
 //
-// Auction service
+// AuctionService for handling bids and querying results
 type AuctionServiceServer interface {
+	// Bid allows a client to place a bid in the auction
 	Bid(context.Context, *BidRequest) (*BidResponse, error)
+	// Result allows a client to query the current highest bid or the auction winner
 	Result(context.Context, *ResultRequest) (*ResultResponse, error)
 	mustEmbedUnimplementedAuctionServiceServer()
 }

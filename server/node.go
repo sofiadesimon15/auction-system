@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,12 +31,14 @@ type TokenRingServer struct {
 	pb.UnimplementedTokenRingServer
 	nodeID       int32
 	hasToken     bool
-	nextNode     string
+	peerNodes    []string // list of peer node addresses in the ring order
+	currentIndex int      // Index of the next node to pass the token to
 	auctionState *AuctionState
 	mutex        sync.Mutex
 	lastPass     time.Time
 	timeout      time.Duration
 	bidChannel   chan *pb.BidRequest // Channel for incoming bids
+	pendingBids  []*pb.BidRequest    // Slice to store pending bids
 }
 
 // AuctionServiceServer handles auction operations
@@ -46,106 +49,16 @@ type AuctionServiceServer struct {
 }
 
 // NewTokenRingServer creates a new TokenRingServer instance
-func NewTokenRingServer(nodeID int32, nextNode string, initialToken bool, auctionState *AuctionState) *TokenRingServer {
+func NewTokenRingServer(nodeID int32, peerNodes []string, initialToken bool, auctionState *AuctionState) *TokenRingServer {
 	return &TokenRingServer{
 		nodeID:       nodeID,
 		hasToken:     initialToken,
-		nextNode:     nextNode,
+		peerNodes:    peerNodes,
+		currentIndex: 0, // Starts with the first peer
 		auctionState: auctionState,
 		lastPass:     time.Now(),
 		timeout:      10 * time.Second,               //  timeout duration for token passing
 		bidChannel:   make(chan *pb.BidRequest, 100), // Buffered channel for bids
-	}
-}
-
-// PassToken receives the token from the previous node in the ring
-func (s *TokenRingServer) PassToken(ctx context.Context, tokenMsg *pb.TokenMessage) (*pb.Response, error) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	fmt.Printf("Node %d received token message: TokenHolderId = %d, NodeID = %d\n", s.nodeID, tokenMsg.TokenHolderId, s.nodeID)
-
-	// Validate TokenHolderId
-	if tokenMsg.TokenHolderId == s.nodeID-1 || (s.nodeID == 1 && tokenMsg.TokenHolderId == 3) { // Adjust for first node case
-		s.hasToken = true
-		fmt.Printf("Node %d has received the token and is entering the critical section\n", s.nodeID)
-		go s.enterCriticalSection()
-	} else {
-		fmt.Printf("Node %d received token message but it does not match its ID. TokenHolderId = %d\n", s.nodeID, tokenMsg.TokenHolderId)
-	}
-
-	return &pb.Response{Message: "Token passed"}, nil
-}
-
-// enterCriticalSection simulates work in the critical section and then passes the token
-func (s *TokenRingServer) enterCriticalSection() {
-	fmt.Printf("Node %d is entering critical section\n", s.nodeID)
-	log.Printf("Node %d entering critical section", s.nodeID)
-
-	time.Sleep(2 * time.Second)
-
-	fmt.Printf("Node %d leaving critical section\n", s.nodeID)
-	log.Printf("Node %d leaving critical section", s.nodeID)
-
-	// After finishing the critical section, pass the token to the next node
-	s.mutex.Lock()
-	s.hasToken = false
-	s.lastPass = time.Now()
-	s.mutex.Unlock()
-	s.passToken()
-}
-
-// passToken sends the token to the next node in the ring
-func (s *TokenRingServer) passToken() {
-	for {
-		conn, err := grpc.Dial(s.nextNode, grpc.WithInsecure())
-		if err != nil {
-			log.Printf("Node %d failed to connect to next node %s: %v", s.nodeID, s.nextNode, err)
-			time.Sleep(1 * time.Second) // Retry after a delay
-			continue
-		}
-
-		client := pb.NewTokenRingClient(conn)
-		// Pass the current node's ID as TokenHolderId
-		_, err = client.PassToken(context.Background(), &pb.TokenMessage{TokenHolderId: s.nodeID})
-		if err != nil {
-			log.Printf("Node %d failed to pass token: %v", s.nodeID, err)
-			conn.Close()
-			time.Sleep(1 * time.Second) // Retry after a delay
-			continue
-		}
-
-		// Log token passing and print that the node passed the token to the next node
-		log.Printf("Node %d passed the token to node at %s", s.nodeID, s.nextNode)
-		fmt.Printf("Node %d passed the token to node at %s\n", s.nodeID, s.nextNode)
-		conn.Close()
-		break
-	}
-}
-
-// moniterTokenPassing moniters token passing and regenerates token if timeout occurs
-func (s *TokenRingServer) monitorTokenPassing() {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		<-ticker.C
-		s.mutex.Lock()
-		if s.hasToken && time.Since(s.lastPass) > s.timeout {
-			log.Printf("Node %d detected token pass timeout. Regenerating token", s.nodeID)
-			s.hasToken = false
-			go s.passToken()
-		}
-		s.mutex.Unlock()
-
-		// Check if Auction has ended
-		s.auctionState.mutex.Lock()
-		ended := s.auctionState.IsEnded
-		s.auctionState.mutex.Unlock()
-		if ended {
-			log.Printf("Node %d detected auction end. Stopping token passing.", s.nodeID)
-			return
-		}
 	}
 }
 
@@ -157,46 +70,194 @@ func NewAuctionService(auctionState *AuctionState, node *TokenRingServer) *Aucti
 	}
 }
 
-// Bid handles bid requests from clients
-func (a *AuctionServiceServer) Bid(ctx context.Context, req *pb.BidRequest) (*pb.BidResponse, error) {
-	log.Printf("Node %d received a bid from %s with amount %d.", a.node.nodeID, req.BidderId, req.Amount)
+// PassToken receives the token from the previous node in the ring
+func (s *TokenRingServer) PassToken(ctx context.Context, tokenMsg *pb.TokenMessage) (*pb.Response, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 
-	// Enqueue the bid for processing
-	select {
-	case a.node.bidChannel <- req:
-		return &pb.BidResponse{Outcome: "success: bid enqueued"}, nil
-	default:
-		log.Printf("Node %d's bid channel is full. Bid from %s with amount %d is rejected.", a.node.nodeID, req.BidderId, req.Amount)
-		return &pb.BidResponse{Outcome: "fail: bid channel full"}, nil
+	log.Printf("Node %d received token from Node %d", s.nodeID, tokenMsg.TokenHolderId)
+
+	s.hasToken = true
+	s.lastPass = time.Now()
+
+	// Process any pending bids first
+	for _, bid := range s.pendingBids {
+		s.processBid(bid)
+		go s.passToken(bid.BidderId, bid.Amount)
+	}
+	// Clear pending bids after processing
+	s.pendingBids = nil
+
+	// If there's a bid in the token, process it
+	if tokenMsg.Amount > 0 && tokenMsg.BidderId != "" {
+		s.processBid(&pb.BidRequest{
+			BidderId: tokenMsg.BidderId,
+			Amount:   tokenMsg.Amount,
+		})
 	}
 
-	/*a.node.mutex.Lock()
-	hasToken := a.node.hasToken
-	a.node.mutex.Unlock()
+	// Check if auction has ended
+	s.auctionState.mutex.Lock()
+	auctionEnded := s.auctionState.IsEnded
+	s.auctionState.mutex.Unlock()
 
-	if !hasToken {
-		// Redirect to the node holding the token
-		return &pb.BidResponse{Outcome: "fail: no token available"}, nil
+	if auctionEnded {
+		log.Printf("Node %d detected auction end. Token will no longer be passed.", s.nodeID)
+		s.hasToken = false
+		return &pb.Response{Message: "Auction ended. Token not passed."}, nil
 	}
 
-	a.auctionState.mutex.Lock()
-	defer a.auctionState.mutex.Unlock()
+	// After processing, pass the token to the next node
+	s.hasToken = false
+	go s.passToken(tokenMsg.BidderId, tokenMsg.Amount)
 
-	if a.auctionState.IsEnded {
-		return &pb.BidResponse{Outcome: "fail: auction ended"}, nil
+	return &pb.Response{Message: "Token passed"}, nil
+}
+
+// passToken sends the token to the next node in the ring
+func (s *TokenRingServer) passToken(bidderID string, amount int32) {
+	for {
+		s.mutex.Lock()
+		if len(s.peerNodes) == 0 {
+			log.Printf("Node %d has no peers to pass the token to.", s.nodeID)
+			s.mutex.Unlock()
+			return
+		}
+
+		if s.currentIndex >= len(s.peerNodes) {
+			s.currentIndex = 0 // Wrap around the ring
+		}
+
+		nextNodeAddr := s.peerNodes[s.currentIndex]
+		s.currentIndex++
+		s.mutex.Unlock()
+
+		if nextNodeAddr == "" {
+			log.Printf("Node %d: Next node address is empty. Skipping.", s.nodeID)
+			continue
+		}
+
+		conn, err := grpc.Dial(nextNodeAddr, grpc.WithInsecure(), grpc.WithBlock(), grpc.WithTimeout(5*time.Second))
+		if err != nil {
+			log.Printf("Node %d failed to connect to next node %s: %v", s.nodeID, nextNodeAddr, err)
+			// Attempt to get the next node from the failed node
+			nextNodeAddrNew, err := s.getNextNodeAddr(nextNodeAddr)
+			if err != nil || nextNodeAddrNew == "" {
+				log.Printf("Node %d could not retrieve next node after failure. Skipping.", s.nodeID)
+				continue
+			}
+			// Remove the failed node from the peer list
+			s.mutex.Lock()
+			index := -1
+			for i, addr := range s.peerNodes {
+				if addr == nextNodeAddr {
+					index = i
+					break
+				}
+			}
+			if index != -1 {
+				s.peerNodes = append(s.peerNodes[:index], s.peerNodes[index+1:]...)
+				if s.currentIndex > index {
+					s.currentIndex-- // Adjust index after removal
+				}
+				log.Printf("Node %d updated peer nodes, skipping failed node %s.", s.nodeID, nextNodeAddr)
+			}
+			s.mutex.Unlock()
+			continue
+		}
+
+		client := pb.NewTokenRingClient(conn)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		token := &pb.TokenMessage{
+			TokenHolderId: s.nodeID,
+			BidderId:      bidderID,
+			Amount:        amount,
+		}
+
+		// Pass the current node's ID as TokenHolderId
+		_, err = client.PassToken(ctx, token)
+		if err != nil {
+			log.Printf("Node %d failed to pass token to %s: %v", s.nodeID, nextNodeAddr, err)
+			conn.Close()
+			// Attempt to get the next node from the failed node
+			nextNodeAddrNew, err := s.getNextNodeAddr(nextNodeAddr)
+			if err != nil || nextNodeAddrNew == "" {
+				log.Printf("Node %d could not retrieve next node after failure. Skipping.", s.nodeID)
+				continue
+			}
+			// Remove the failed node from the peer list
+			s.mutex.Lock()
+			index := -1
+			for i, addr := range s.peerNodes {
+				if addr == nextNodeAddr {
+					index = i
+					break
+				}
+			}
+			if index != -1 {
+				s.peerNodes = append(s.peerNodes[:index], s.peerNodes[index+1:]...)
+				if s.currentIndex > index {
+					s.currentIndex--
+				}
+				log.Printf("Node %d updated peer nodes, skipping failed node %s.", s.nodeID, nextNodeAddr)
+			}
+			s.mutex.Unlock()
+			continue
+		}
+
+		// Log token passing and print that the node passed the token to the next node
+		log.Printf("Node %d passed the token to node at %s with bid (%s, %d)", s.nodeID, nextNodeAddr, bidderID, amount)
+		conn.Close()
+		break
+	}
+}
+
+// getNextNodeAddr connects to the failed node and retrieves its next node address via RPC.
+func (s *TokenRingServer) getNextNodeAddr(failedNodeAddr string) (string, error) {
+	conn, err := grpc.Dial(failedNodeAddr, grpc.WithInsecure(), grpc.WithBlock(), grpc.WithTimeout(5*time.Second))
+	if err != nil {
+		return "", fmt.Errorf("failed to connect to node %s: %v", failedNodeAddr, err)
+	}
+	defer conn.Close()
+
+	client := pb.NewTokenRingClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req := &pb.GetNextNodeRequest{CurrentNodeAddr: failedNodeAddr}
+	resp, err := client.GetNextNode(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("GetNextNode RPC failed for node %s: %v", failedNodeAddr, err)
 	}
 
-	if req.Amount <= a.auctionState.HighestBid {
-		return &pb.BidResponse{Outcome: "fail: bid too low"}, nil
+	return resp.NextNodeAddr, nil
+}
+
+// GetNextNode asks the current next node for its next node
+func (s *TokenRingServer) GetNextNode(ctx context.Context, req *pb.GetNextNodeRequest) (*pb.GetNextNodeResponse, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	// Find the index of the current node address
+	var currentIndex int = -1
+	for i, addr := range s.peerNodes {
+		if addr == req.CurrentNodeAddr {
+			currentIndex = i
+			break
+		}
 	}
 
-	// Update auction state
-	a.auctionState.HighestBid = req.Amount
-	a.auctionState.HighestBidder = req.BidderId
+	if currentIndex == -1 {
+		return &pb.GetNextNodeResponse{NextNodeAddr: ""}, fmt.Errorf("Current node address not found")
+	}
 
-	log.Printf("[Auction] New highest bid: %d by %s", a.auctionState.HighestBid, a.auctionState.HighestBidder)
+	// Calculate the next node index
+	nextIndex := (currentIndex + 1) % len(s.peerNodes)
+	nextNodeAddr := s.peerNodes[nextIndex]
 
-	return &pb.BidResponse{Outcome: "success"}, nil*/
+	return &pb.GetNextNodeResponse{NextNodeAddr: nextNodeAddr}, nil
 }
 
 func (s *TokenRingServer) processBid(bid *pb.BidRequest) {
@@ -223,30 +284,22 @@ func (s *TokenRingServer) processBid(bid *pb.BidRequest) {
 // continously listens for incoming bids and processes them
 func (s *TokenRingServer) listenForBids() {
 	for bid := range s.bidChannel {
+		log.Printf("Node %d received a bid from %s with amount %d.", s.nodeID, bid.BidderId, bid.Amount)
+		// If the node has the token, process the bid immediately
 		if s.hasToken {
-			log.Printf("Node %d is processing a bid from %s for amount %d.", s.nodeID, bid.BidderId, bid.Amount)
+			log.Printf("Node %d has the token. Processing the bid", s.nodeID)
 			s.processBid(bid)
+			// Pass the token with the bid to propagate it.
+			go s.passToken(bid.BidderId, bid.Amount)
 		} else {
-			log.Printf("Node %d received a bid but does not hold the token. Bid from %s with amount %d is rejected.", s.nodeID, bid.BidderId, bid.Amount)
-			s.forwardBid(bid)
+			// Otherwise, enqueue the bid to be processed when the token arrives
+			s.mutex.Lock()
+			s.pendingBids = append(s.pendingBids, bid)
+			s.mutex.Unlock()
+			log.Printf("Node %d added the bid from %s to pending bids.", s.nodeID, bid.BidderId)
 		}
 	}
 	log.Printf("Node %d bidChannel closed. Stopping bid listener.", s.nodeID)
-}
-
-func (s *TokenRingServer) forwardBid(bid *pb.BidRequest) {
-	conn, err := grpc.Dial(s.nextNode, grpc.WithInsecure())
-	if err != nil {
-		log.Printf("Node %d failed to connect to next node %s for bid forwarding: %v", s.nodeID, s.nextNode, err)
-		return
-	}
-	defer conn.Close()
-
-	client := pb.NewAuctionServiceClient(conn)
-	_, err = client.Bid(context.Background(), bid)
-	if err != nil {
-		log.Printf("Node %d failed to forward bid to next node %s: %v", s.nodeID, s.nextNode, err)
-	}
 }
 
 // Result handles result queries from clients
@@ -265,9 +318,23 @@ func (a *AuctionServiceServer) Result(ctx context.Context, req *pb.ResultRequest
 	}
 }
 
+// Bid handles bid requests from clients
+func (a *AuctionServiceServer) Bid(ctx context.Context, req *pb.BidRequest) (*pb.BidResponse, error) {
+	log.Printf("Node %d received a bid from %s with amount %d.", a.node.nodeID, req.BidderId, req.Amount)
+
+	// Enqueue the bid for processing
+	select {
+	case a.node.bidChannel <- req:
+		return &pb.BidResponse{Outcome: "success: bid enqueued"}, nil
+	default:
+		log.Printf("Node %d's bid channel is full. Bid from %s with amount %d is rejected.", a.node.nodeID, req.BidderId, req.Amount)
+		return &pb.BidResponse{Outcome: "fail: bid channel full"}, nil
+	}
+}
+
 func main() {
 	if len(os.Args) < 4 {
-		log.Fatalf("Usage: go run node.go <nodeID> <nextNodeAddress> <initialToken(true|false)>")
+		log.Fatalf("Usage: go run node.go <nodeID> <peerNodes(comma-separated)> <initialToken(true|false)>")
 	}
 
 	// Parse the nodeID as an int32
@@ -275,8 +342,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("Invalid nodeID: %v", err)
 	}
-	nextNode := os.Args[2]
+	peerNodesInput := os.Args[2]
 	initialToken := os.Args[3] == "true"
+
+	// Split peer addresses by comma
+	var peerNodes []string
+	if peerNodesInput != "-" {
+		peerNodes = strings.Split(peerNodesInput, ",")
+	} else {
+		peerNodes = []string{}
+	}
 
 	// Initialize Auction State
 	auctionState := &AuctionState{
@@ -288,7 +363,7 @@ func main() {
 	}
 
 	// Create a new TokenRingServer instance
-	tokenRingServer := NewTokenRingServer(int32(nodeID), nextNode, initialToken, auctionState)
+	tokenRingServer := NewTokenRingServer(int32(nodeID), peerNodes, initialToken, auctionState)
 
 	// Create a new AuctionService instance
 	auctionService := NewAuctionService(auctionState, tokenRingServer)
@@ -302,7 +377,8 @@ func main() {
 	}
 
 	// Setup logging to a file
-	logFile, err := os.OpenFile("logs/log.txt", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	logFileName := fmt.Sprintf("logs/node_%d_log.txt", nodeID)
+	logFile, err := os.OpenFile(logFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		log.Fatalf("Failed to open log file: %v", err)
 	}
@@ -326,7 +402,7 @@ func main() {
 		tokenRingServer.mutex.Lock()
 		if tokenRingServer.hasToken {
 			tokenRingServer.hasToken = false
-			go tokenRingServer.passToken()
+			go tokenRingServer.passToken("", 0)
 		}
 		tokenRingServer.mutex.Unlock()
 	}()
@@ -354,7 +430,8 @@ func main() {
 	if initialToken {
 		go func() {
 			time.Sleep(10 * time.Second) // Increased delay before starting token pass
-			tokenRingServer.passToken()
+			log.Printf("Node %d is initiating token passing.", tokenRingServer.nodeID)
+			tokenRingServer.passToken("", 0)
 		}()
 	}
 
@@ -362,4 +439,30 @@ func main() {
 		log.Fatalf("Failed to serve: %v", err)
 	}
 
+}
+
+// monitorTokenPassing monitors token passing and regenerates token if timeout occurs
+func (s *TokenRingServer) monitorTokenPassing() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		<-ticker.C
+		s.mutex.Lock()
+		if s.hasToken && time.Since(s.lastPass) > s.timeout {
+			log.Printf("Node %d detected token pass timeout. Attempting to regenerate token", s.nodeID)
+			s.hasToken = false
+			go s.passToken("", 0)
+		}
+		s.mutex.Unlock()
+
+		// Check if Auction has ended
+		s.auctionState.mutex.Lock()
+		ended := s.auctionState.IsEnded
+		s.auctionState.mutex.Unlock()
+		if ended {
+			log.Printf("Node %d detected auction end. Stopping token passing.", s.nodeID)
+			return
+		}
+	}
 }
